@@ -43,96 +43,106 @@ ${ticket.body}
   let iterationCount = 0;
   let maxIterations = 10;
 
-  while(iterationCount < maxIterations) {
+  while (iterationCount < maxIterations) {
     iterationCount++;
     console.log(`[Agent] Iteration ${iterationCount}...`);
-  const response = await claude.messages.create({
-    model: "claude-sonnet-4-5",
-    max_tokens: 1024,
-    system: SYSTEM_PROMPT,
-    tools: supportTools,    
-    messages
-  });
+    const response = await claude.messages.create({
+      model: "claude-sonnet-4-5",
+      max_tokens: 1024,
+      system: SYSTEM_PROMPT,
+      tools: supportTools,
+      messages,
+    });
 
-  console.log(`[Agent] stop reason: ${response.stop_reason}`);
-  console.log(`[Tokens] Input: ${response.usage.input_tokens} | Output: ${response.usage.output_tokens}`);
+    console.log(`[Agent] Claude Response is: ${JSON.stringify(response, null, 2)}`);
 
-  // Case 1: Claude has made a decision and ended the turn
-  if(response.stop_reason === "end_turn") {
-    const textBlock = response.content.find(block => block.type === "text");
-
-    if(!textBlock || textBlock.type !== "text") {
-              throw new Error("No text block in final response");
-  }
-
-  // Parse Claude's JSON response
-  let parsed: {
-    response: string;
-    action: "resolved" | "escalated" | "needs_info";
-    confidence: number;
-    reasoning: string;
-  };
-
-  try {
-    parsed = JSON.parse(textBlock.text);
-  } catch {
-    throw new Error(
-      `Failed to parse Claude response as JSON: ${textBlock.text}`,
+    console.log(`[Agent] stop reason: ${response.stop_reason}`);
+    console.log(
+      `[Tokens] Input: ${response.usage.input_tokens} | Output: ${response.usage.output_tokens}`,
     );
-  }
 
-   console.log(`[Agent] ✓ Done — Action: ${parsed.action} | Confidence: ${parsed.confidence}`);
+    // Case 1: Claude has made a decision and ended the turn
+    if (response.stop_reason === "end_turn") {
+      const textBlock = response.content.find((block) => block.type === "text");
+
+      if (!textBlock || textBlock.type !== "text") {
+        throw new Error("No text block in final response");
+      }
+
+      // Parse Claude's JSON response
+      let parsed: {
+        response: string;
+        action: "resolved" | "escalated" | "needs_info";
+        confidence: number;
+        reasoning: string;
+      };
+
+      try {
+        parsed = JSON.parse(textBlock.text);
+      } catch {
+        throw new Error(
+          `Failed to parse Claude response as JSON: ${textBlock.text}`,
+        );
+      }
+
+      console.log(
+        `[Agent] ✓ Done — Action: ${parsed.action} | Confidence: ${parsed.confidence}`,
+      );
       console.log(`[Agent] Reasoning: ${parsed.reasoning}`);
 
-  return {
-    ticketId: ticket.id,
-    response: parsed.response,
-    action: parsed.action,
-    confidence: parsed.confidence,
-    resolvedAt: new Date().toISOString(),
-  };
-}
+      return {
+        ticketId: ticket.id,
+        response: parsed.response,
+        action: parsed.action,
+        confidence: parsed.confidence,
+        resolvedAt: new Date().toISOString(),
+      };
+    }
 
-// case 2: Claude wants to use a tool — execute it and feed results back in
-if (response.stop_reason === "tool_use") {
-    // Add Claude's response (including tools_use blocks) to message history
-    messages.push({
+    // case 2: Claude wants to use a tool — execute it and feed results back in
+    if (response.stop_reason === "tool_use") {
+      // Add Claude's response (including tools_use blocks) to message history
+      messages.push({
         role: "assistant",
         content: response.content,
-    });
+      });
 
-// Process every tool Claude asked for in this turn
-const toolResults: Anthropic.ToolResultBlockParam[]=[];
+      // Process every tool Claude asked for in this turn
+      const toolResults: Anthropic.ToolResultBlockParam[] = [];
 
-for(const block of response.content) {
-    if(block.type !== "tool_use") continue;
+      for (const block of response.content) {
+        if (block.type !== "tool_use") continue;
 
-    console.log(`[Tool] Calling: ${block.name}`);
+        console.log(`[Tool] Calling: ${block.name}`);
         console.log(`[Tool] Input:`, JSON.stringify(block.input, null, 2));
 
-    const result = await executeTool(block.name, block.input as Record<string, string>);
+        const result = await executeTool(
+          block.name,
+          block.input as Record<string, string>,
+        );
 
-            console.log(`[Tool] Result preview: ${result.substring(0, 80)}...`);
-    toolResults.push({
-        type: "tool_result",
-        tool_use_id: block.id,
-        content: result,
-    });
-}
+        console.log(`[Tool] Result preview: ${result.substring(0, 80)}...`);
+        toolResults.push({
+          type: "tool_result",
+          tool_use_id: block.id,
+          content: result,
+        });
+      }
 
-// Send all tool results back to Claude and let it continue the conversation
-messages.push({
-    role: "user",
-    content: toolResults,
-});
+      // Send all tool results back to Claude and let it continue the conversation
+      messages.push({
+        role: "user",
+        content: toolResults,
+      });
 
-continue; // go back to the top — Claude will process results
+      continue; // go back to the top — Claude will process results
+    }
 
-}
-
-// ── Case 3: Unexpected stop reason ──
+    // ── Case 3: Unexpected stop reason ──
     throw new Error(`Unexpected stop_reason: ${response.stop_reason}`);
   }
 
-  throw new Error(`Agent exceeded maximum iterations (${maxIterations}) without resolving ticket ${ticket.id}`);
+  throw new Error(
+    `Agent exceeded maximum iterations (${maxIterations}) without resolving ticket ${ticket.id}`,
+  );
 }
