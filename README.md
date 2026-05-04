@@ -37,13 +37,13 @@ Nexus is a customer support AI agent SaaS that enterprise clients plug into thei
 
 ```
 ┌─────────────────────────────────────────────────────────────┐
-│                        CLIENT REQUEST                        │
+│                        CLIENT REQUEST                       │
 │              (Webhook / REST API / Scheduled Job)           │
 └──────────────────────────┬──────────────────────────────────┘
                            │
                            ▼
 ┌─────────────────────────────────────────────────────────────┐
-│                    EXPRESS HTTP SERVER                       │
+│                    EXPRESS HTTP SERVER                      │
 │  POST /tickets        POST /tickets/stream                  │
 │  POST /tickets/cached POST /tickets/orchestrated            │
 │  POST /batch/analyze  GET  /batch/status                    │
@@ -58,7 +58,7 @@ Nexus is a customer support AI agent SaaS that enterprise clients plug into thei
    │ Single-turn │  │ Files API + │  │  Nightly    │
    │ + Streaming │  │   Prompt    │  │  scoring +  │
    │   + Tools   │  │   Caching   │  │ KB gap      │
-   └──────┬──────┘  └──────┬──────┘  │  analysis  │
+   └──────┬──────┘  └──────┬──────┘  │  analysis   │
           │                │         └──────┬──────┘
           └────────────────┘                │
                    │                        │
