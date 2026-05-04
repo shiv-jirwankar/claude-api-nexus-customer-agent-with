@@ -6,6 +6,9 @@ import { handleTicketCached } from "./agents/cachedSupportAgent";
 import { uploadCustomerAttachment } from "./lib/filesService";
 import { Ticket } from "./types/ticket";
 import { runOrchestrator } from "./agents/orchestrator";
+import { saveResolution } from "./lib/ticketStore";
+import { runNightlyBatchAnalysis } from "./services/batchAnalysis";
+import { getAllStoredTickets, getStoredTicketCount } from "./lib/ticketStore";
 
 dotenv.config();
 
@@ -118,7 +121,7 @@ console.log("Registered routes:");
     );
   });
 
-// Step 6 route — full multi-agent orchestration
+// Update the orchestrated route to save results
 app.post("/tickets/orchestrated", async (req, res) => {
   try {
     const ticket = req.body as Ticket;
@@ -127,6 +130,10 @@ app.post("/tickets/orchestrated", async (req, res) => {
       return;
     }
     const resolution = await runOrchestrator(ticket);
+
+    // Save to store for nightly batch analysis
+    saveResolution(ticket, resolution);
+
     res.json(resolution);
   } catch (error) {
     const message = error instanceof Error ? error.message : String(error);
@@ -135,6 +142,39 @@ app.post("/tickets/orchestrated", async (req, res) => {
   }
 });
 
+// Check how many tickets are stored and ready for analysis
+app.get("/batch/status", (_req, res) => {
+  res.json({
+    storedTickets: getStoredTicketCount(),
+    message: `${getStoredTicketCount()} tickets ready for batch analysis`,
+  });
+});
+
+// Trigger nightly batch analysis manually
+// In production this would be a cron job (e.g. node-cron at midnight)
+app.post("/batch/analyze", async (req, res) => {
+  try {
+    const tickets = getAllStoredTickets();
+
+    if (tickets.length === 0) {
+      res.status(400).json({
+        error: "No tickets stored yet. Process some tickets via /tickets/orchestrated first.",
+      });
+      return;
+    }
+
+    console.log(`[Server] Starting batch analysis for ${tickets.length} tickets...`);
+    const report = await runNightlyBatchAnalysis(tickets);
+    res.json(report);
+
+  } catch (error) {
+    const message = error instanceof Error ? error.message : String(error);
+    console.error("[Server] Batch error:", message);
+    res.status(500).json({ error: message });
+  }
+});
+
 app.listen(PORT, () => {
   console.log(`\nNexus running on http://localhost:${PORT}`);
 });
+

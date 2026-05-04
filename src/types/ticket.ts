@@ -50,3 +50,32 @@ export interface OrchestratorPlan {
   runResearchInParallel: boolean;
   finalAction: "resolve" | "escalate" | "needs_info";
 }
+
+export interface StoredTicket {
+  ticket: Ticket;
+  resolution: TicketResolution;
+  resolvedAt: string;
+}
+
+export interface TicketScore {
+  ticketId: string;
+  qualityScore: number;        // 0-10: how good was the response?
+  accuracyScore: number;       // 0-10: was the solution correct?
+  empathyScore: number;        // 0-10: was the tone appropriate?
+  kbGaps: string[];            // topics not covered in KB
+  improvementSuggestions: string[];
+  category: string;
+}
+
+export interface KbGapReport {
+  generatedAt: string;
+  totalTicketsAnalyzed: number;
+  topGaps: Array<{
+    topic: string;
+    frequency: number;
+    suggestedArticleTitle: string;
+    suggestedContent: string;
+  }>;
+  overallQualityScore: number;
+  agentPerformanceSummary: string;
+}
