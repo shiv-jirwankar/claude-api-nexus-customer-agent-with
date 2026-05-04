@@ -6,16 +6,14 @@ import { executeTool } from "../tools/executor";
 
 const SYSTEM_PROMPT = `You are a senior customer support specialist for a SaaS company called Nexus.
 
-Your job is to read incoming support tickets and draft a helpful, professional response.
+Before responding to any ticket you MUST use your tools in this order:
+1. search_knowledge_base — find relevant solutions
+2. get_customer_history — understand the customer's context
+3. check_system_status — rule out infrastructure issues
 
-Guidelines:
-- Be empathetic and clear
-- If the issue is a known technical problem, provide step-by-step resolution steps
-- If you cannot resolve it with certainty, say so honestly — do not guess
-- Always end with a follow-up offer
-- Keep responses concise — under 150 words
+Only after all three tool calls should you draft your final response.
 
-Respond in this exact JSON format:
+Respond with this exact JSON in your final message:
 {
   "response": "your drafted reply to the customer",
   "action": "resolved" | "escalated" | "needs_info",
@@ -24,28 +22,31 @@ Respond in this exact JSON format:
 }`;
 
 export async function handleTicket(ticket: Ticket): Promise<TicketResolution> {
-  console.log(`[Agent] Processing ticket ${ticket.id}...`);
+  console.log(`\n[Agent] ── Processing ticket ${ticket.id} ──`);
 
+  // This array grows with every iteration — it IS the conversation
   const messages: Anthropic.MessageParam[] = [
     {
       role: "user",
       content: `
-Customer: ${ticket.customerName}
+Customer: ${ticket.customerName} (ID: ${ticket.customerId})
 Subject: ${ticket.subject}
 Priority: ${ticket.priority}
 
 Message:
 ${ticket.body}
-  `.trim(),
+      `.trim(),
     },
   ];
 
-  let iterationCount = 0;
-  let maxIterations = 10;
+  let iteration = 0;
+  const MAX_ITERATIONS = 10; // safety cap — prevents runaway loops
 
-  while (iterationCount < maxIterations) {
-    iterationCount++;
-    console.log(`[Agent] Iteration ${iterationCount}...`);
+  // ── The agentic loop ──────────────────────────────────────────
+  while (iteration < MAX_ITERATIONS) {
+    iteration++;
+    console.log(`\n[Agent] Iteration ${iteration}`);
+
     const response = await claude.messages.create({
       model: "claude-sonnet-4-5",
       max_tokens: 1024,
@@ -54,22 +55,17 @@ ${ticket.body}
       messages,
     });
 
-    console.log(`[Agent] Claude Response is: ${JSON.stringify(response, null, 2)}`);
+    console.log(`[Agent] stop_reason: ${response.stop_reason}`);
+    console.log(`[Tokens] Input: ${response.usage.input_tokens} | Output: ${response.usage.output_tokens}`);
 
-    console.log(`[Agent] stop reason: ${response.stop_reason}`);
-    console.log(
-      `[Tokens] Input: ${response.usage.input_tokens} | Output: ${response.usage.output_tokens}`,
-    );
-
-    // Case 1: Claude has made a decision and ended the turn
+    // ── CASE 1: Claude is done — extract final answer ─────────
     if (response.stop_reason === "end_turn") {
-      const textBlock = response.content.find((block) => block.type === "text");
+      const textBlock = response.content.find((b) => b.type === "text");
 
       if (!textBlock || textBlock.type !== "text") {
-        throw new Error("No text block in final response");
+        throw new Error("No text block found in final response");
       }
 
-      // Parse Claude's JSON response
       let parsed: {
         response: string;
         action: "resolved" | "escalated" | "needs_info";
@@ -80,14 +76,11 @@ ${ticket.body}
       try {
         parsed = JSON.parse(textBlock.text);
       } catch {
-        throw new Error(
-          `Failed to parse Claude response as JSON: ${textBlock.text}`,
-        );
+        throw new Error(`Could not parse Claude response as JSON:\n${textBlock.text}`);
       }
 
-      console.log(
-        `[Agent] ✓ Done — Action: ${parsed.action} | Confidence: ${parsed.confidence}`,
-      );
+      console.log(`\n[Agent] ✓ Complete`);
+      console.log(`[Agent] Action: ${parsed.action} | Confidence: ${parsed.confidence}`);
       console.log(`[Agent] Reasoning: ${parsed.reasoning}`);
 
       return {
@@ -99,50 +92,56 @@ ${ticket.body}
       };
     }
 
-    // case 2: Claude wants to use a tool — execute it and feed results back in
+    // ── CASE 2: Claude wants to use tools ─────────────────────
     if (response.stop_reason === "tool_use") {
-      // Add Claude's response (including tools_use blocks) to message history
+
+      // Step A: add Claude's full response (tool_use blocks) to history
+      // This is critical — Claude needs to see its own tool requests
+      // in the history to understand what results belong to which call
       messages.push({
         role: "assistant",
         content: response.content,
       });
 
-      // Process every tool Claude asked for in this turn
+      // Step B: execute every tool Claude asked for in this turn
+      // Claude can request multiple tools in a single iteration
       const toolResults: Anthropic.ToolResultBlockParam[] = [];
 
       for (const block of response.content) {
         if (block.type !== "tool_use") continue;
 
-        console.log(`[Tool] Calling: ${block.name}`);
-        console.log(`[Tool] Input:`, JSON.stringify(block.input, null, 2));
+        console.log(`[Tool] → ${block.name}`);
+        console.log(`[Tool]   input: ${JSON.stringify(block.input)}`);
 
         const result = await executeTool(
           block.name,
-          block.input as Record<string, string>,
+          block.input as Record<string, string>
         );
 
-        console.log(`[Tool] Result preview: ${result.substring(0, 80)}...`);
+        console.log(`[Tool]   result: ${result.substring(0, 100)}...`);
+
+        // Each result is matched back to its request via tool_use_id
+        // This is how Claude knows which result belongs to which call
         toolResults.push({
           type: "tool_result",
-          tool_use_id: block.id,
+          tool_use_id: block.id,   // ← must match the block.id from above
           content: result,
         });
       }
 
-      // Send all tool results back to Claude and let it continue the conversation
+      // Step C: send all results back in a single user turn
       messages.push({
         role: "user",
         content: toolResults,
       });
 
-      continue; // go back to the top — Claude will process results
+      // Step D: loop back — Claude will read results and decide next step
+      continue;
     }
 
-    // ── Case 3: Unexpected stop reason ──
+    // ── CASE 3: Something unexpected ──────────────────────────
     throw new Error(`Unexpected stop_reason: ${response.stop_reason}`);
   }
 
-  throw new Error(
-    `Agent exceeded maximum iterations (${maxIterations}) without resolving ticket ${ticket.id}`,
-  );
+  throw new Error(`Agent hit maximum iterations (${MAX_ITERATIONS}) — possible loop`);
 }
